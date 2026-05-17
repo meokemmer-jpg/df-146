@@ -1,0 +1,46 @@
+{
+  "api_calls_total": 18420,
+  "df": "DF-146",
+  "error_rate_pct": 1.7,
+  "iso_timestamp": "2026-05-17T06:17:11.615642+00:00",
+  "k17_pre_action_verification": {
+    "env_tag": "default",
+    "missing_anchors": [],
+    "ok": true
+  },
+  "p99_latency_ms": 842.0,
+  "source": "mock",
+  "throttled_clients": [
+    {
+      "client_id": "client_017",
+      "throttles": 42
+    },
+    {
+      "client_id": "client_044",
+      "throttles": 18
+    }
+  ],
+  "top_endpoints": [
+    {
+      "calls": 7420,
+      "endpoint": "/v1/events"
+    },
+    {
+      "calls": 5110,
+      "endpoint": "/v1/usage"
+    },
+    {
+      "calls": 2840,
+      "endpoint": "/v1/accounts"
+    },
+    {
+      "calls": 1830,
+      "endpoint": "/v1/health"
+    },
+    {
+      "calls": 1220,
+      "endpoint": "/v1/tokens"
+    }
+  ],
+  "welle": "25"
+}
