@@ -1,74 +1,56 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 # [CRUX-MK]
+# Hinweis: `from 146 import ...` ist in Python-Syntax ungueltig.
+# Fuer einen grün laufenden pytest-Test wird das Modul daher per importlib geladen.
+
 import importlib
-
-m = importlib.import_module("146")
-aggregate_usage = m.aggregate_usage
-build_report = m.build_report
-write_report = m.write_report
+import json
 
 
-def test_aggregate_usage_and_report_output(tmp_path):
+m146 = importlib.import_module("146")
+aggregate_usage = m146.aggregate_usage
+build_report = m146.build_report
+write_report = m146.write_report
+
+
+def test_usage_aggregation_and_report_write(tmp_path):
     events = [
-        {
-            "hotel_id": "hotel-a",
-            "customer_id": "cust-1",
-            "api_calls": 3,
-            "tokens": 1500,
-            "cost_per_1k_tokens": "0.50",
-        },
-        {
-            "hotel_id": "hotel-a",
-            "customer_id": "cust-1",
-            "api_calls": 2,
-            "tokens": 500,
-            "cost_per_1k_tokens": "0.50",
-        },
-        {
-            "hotel_id": "hotel-b",
-            "customer_id": "cust-2",
-            "api_calls": 7,
-            "tokens": 2500,
-            "cost_per_1k_tokens": "1.20",
-        },
+        {"hotel_id": "hotel-a", "customer_id": "cust-1", "api_calls": 3, "tokens": 1200, "cost_eur": "0.30"},
+        {"hotel_id": "hotel-a", "customer_id": "cust-1", "api_calls": 2, "tokens": 800, "cost_eur": "0.20"},
+        {"hotel_id": "hotel-b", "customer_id": "cust-2", "api_calls": 5, "tokens": 2500, "cost_eur": "0.75"},
     ]
 
-    summary = aggregate_usage(events)
-
-    assert summary["billing_mode"] == "read_only"
-    assert summary["api_calls_per_hotel"] == {"hotel-a": 5, "hotel-b": 7}
-    assert summary["token_burn_per_customer"] == {"cust-1": 2000, "cust-2": 2500}
-    assert summary["cost_per_customer"] == {"cust-1": "1.00", "cust-2": "3.00"}
-    assert summary["totals"] == {
-        "events": 3,
-        "api_calls": 12,
-        "tokens": 4500,
-        "cost": "4.00",
+    aggregated = aggregate_usage(events)
+    assert aggregated["billing_mode"] == "report_only"
+    assert aggregated["hotels"]["hotel-a"]["api_calls"] == 5
+    assert aggregated["hotels"]["hotel-b"]["api_calls"] == 5
+    assert aggregated["customers"]["cust-1"]["token_burn"] == 2000
+    assert aggregated["customers"]["cust-1"]["cost_eur"] == "0.50"
+    assert aggregated["customers"]["cust-2"]["token_burn"] == 2500
+    assert aggregated["customers"]["cust-2"]["cost_eur"] == "0.75"
+    assert aggregated["summary"] == {
+        "total_api_calls": 10,
+        "total_tokens": 4500,
+        "total_cost_eur": "1.25",
+        "hotel_count": 2,
+        "customer_count": 2,
     }
 
-    report = build_report(events, report_date="2026-06-09")
-    assert report["report_date"] == "2026-06-09"
+    report = build_report(events, report_date="2026-06-14")
+    assert report["report_date"] == "2026-06-14"
 
-    output_path = write_report(events, report_dir=tmp_path, report_date="2026-06-09")
-    assert output_path.name == "df-146-2026-06-09.json"
+    output_path = write_report(events, output_dir=tmp_path, report_date="2026-06-14")
+    assert output_path.name == "df-146-2026-06-14.json"
     assert output_path.exists()
 
-    content = output_path.read_text(encoding="utf-8")
-    assert '"billing_mode": "read_only"' in content
-    assert '"hotel-a": 5' in content
-    assert '"cust-2": "3.00"' in content
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload == report
 
 
-def test_negative_values_raise():
+def test_negative_values_raise_value_error():
     bad_events = [
-        {
-            "hotel_id": "hotel-a",
-            "customer_id": "cust-1",
-            "api_calls": -1,
-            "tokens": 100,
-            "cost_per_1k_tokens": "0.25",
-        }
+        {"hotel_id": "hotel-a", "customer_id": "cust-1", "api_calls": -1, "tokens": 10, "cost_eur": "0.01"}
     ]
 
     try:
@@ -76,4 +58,4 @@ def test_negative_values_raise():
     except ValueError as exc:
         assert "non-negative" in str(exc)
     else:
-        raise AssertionError("aggregate_usage should reject negative values")
+        raise AssertionError("ValueError was not raised for negative usage values")
