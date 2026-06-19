@@ -1,110 +1,130 @@
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+import json
 from pathlib import Path
-from typing import Iterable, Mapping, Any
-
-
-TWOPLACES = Decimal("0.01")
-
-
-def _to_decimal(value: Any) -> Decimal:
-    return Decimal(str(value))
-
-
-def _money(value: Decimal) -> Decimal:
-    return value.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
 @dataclass(frozen=True)
 class UsageEvent:
     hotel_id: str
     customer_id: str
-    api_calls: int
-    tokens: int
-    cost_eur: Decimal
+    api_calls: int = 0
+    tokens: int = 0
+    model: str = "default"
+    unit_cost_per_1k_tokens: float = 0.0
 
     @classmethod
-    def from_mapping(cls, row: Mapping[str, Any]) -> "UsageEvent":
-        hotel_id = str(row["hotel_id"])
-        customer_id = str(row["customer_id"])
-        api_calls = int(row.get("api_calls", 0))
-        tokens = int(row.get("tokens", 0))
-        cost_eur = _to_decimal(row.get("cost_eur", "0"))
-
-        if api_calls < 0 or tokens < 0 or cost_eur < 0:
-            raise ValueError("usage values must be non-negative")
-
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "UsageEvent":
         return cls(
-            hotel_id=hotel_id,
-            customer_id=customer_id,
-            api_calls=api_calls,
-            tokens=tokens,
-            cost_eur=cost_eur,
+            hotel_id=str(raw["hotel_id"]),
+            customer_id=str(raw["customer_id"]),
+            api_calls=int(raw.get("api_calls", 0)),
+            tokens=int(raw.get("tokens", 0)),
+            model=str(raw.get("model", "default")),
+            unit_cost_per_1k_tokens=float(raw.get("unit_cost_per_1k_tokens", 0.0)),
         )
 
 
-def aggregate_usage(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    hotel_api_calls: dict[str, int] = defaultdict(int)
-    customer_tokens: dict[str, int] = defaultdict(int)
-    customer_costs: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+def _round_money(value: float) -> float:
+    return round(value + 1e-12, 6)
+
+
+def aggregate_usage(events: Iterable[Mapping[str, Any] | UsageEvent]) -> Dict[str, Any]:
+    by_hotel: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"api_calls": 0, "tokens": 0, "customers": set(), "cost": 0.0}
+    )
+    by_customer: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"api_calls": 0, "tokens": 0, "hotels": set(), "cost": 0.0}
+    )
 
     total_api_calls = 0
     total_tokens = 0
-    total_cost = Decimal("0")
+    total_cost = 0.0
 
-    for raw_event in events:
-        event = UsageEvent.from_mapping(raw_event)
+    for item in events:
+        event = item if isinstance(item, UsageEvent) else UsageEvent.from_mapping(item)
 
-        hotel_api_calls[event.hotel_id] += event.api_calls
-        customer_tokens[event.customer_id] += event.tokens
-        customer_costs[event.customer_id] += event.cost_eur
+        if event.api_calls < 0 or event.tokens < 0 or event.unit_cost_per_1k_tokens < 0:
+            raise ValueError("Usage values must be non-negative.")
+
+        event_cost = (event.tokens / 1000.0) * event.unit_cost_per_1k_tokens
+
+        hotel = by_hotel[event.hotel_id]
+        hotel["api_calls"] += event.api_calls
+        hotel["tokens"] += event.tokens
+        hotel["customers"].add(event.customer_id)
+        hotel["cost"] += event_cost
+
+        customer = by_customer[event.customer_id]
+        customer["api_calls"] += event.api_calls
+        customer["tokens"] += event.tokens
+        customer["hotels"].add(event.hotel_id)
+        customer["cost"] += event_cost
 
         total_api_calls += event.api_calls
         total_tokens += event.tokens
-        total_cost += event.cost_eur
+        total_cost += event_cost
+
+    hotels = {
+        hotel_id: {
+            "api_calls": data["api_calls"],
+            "tokens": data["tokens"],
+            "customer_count": len(data["customers"]),
+            "cost": _round_money(data["cost"]),
+        }
+        for hotel_id, data in sorted(by_hotel.items())
+    }
+
+    customers = {
+        customer_id: {
+            "api_calls": data["api_calls"],
+            "tokens": data["tokens"],
+            "hotel_count": len(data["hotels"]),
+            "cost": _round_money(data["cost"]),
+        }
+        for customer_id, data in sorted(by_customer.items())
+    }
 
     return {
-        "billing_mode": "report_only",
-        "hotels": {
-            hotel_id: {"api_calls": api_calls}
-            for hotel_id, api_calls in sorted(hotel_api_calls.items())
-        },
-        "customers": {
-            customer_id: {
-                "token_burn": customer_tokens[customer_id],
-                "cost_eur": str(_money(customer_costs[customer_id])),
-            }
-            for customer_id in sorted(customer_tokens)
-        },
         "summary": {
+            "hotel_count": len(hotels),
+            "customer_count": len(customers),
             "total_api_calls": total_api_calls,
             "total_tokens": total_tokens,
-            "total_cost_eur": str(_money(total_cost)),
-            "hotel_count": len(hotel_api_calls),
-            "customer_count": len(customer_tokens),
+            "total_cost": _round_money(total_cost),
+            "auto_billing": False,
         },
+        "hotels": hotels,
+        "customers": customers,
     }
 
 
-def build_report(events: Iterable[Mapping[str, Any]], report_date: str | None = None) -> dict[str, Any]:
+def build_report(
+    events: Iterable[Mapping[str, Any] | UsageEvent],
+    report_date: Optional[str] = None,
+) -> Dict[str, Any]:
     payload = aggregate_usage(events)
     payload["report_date"] = report_date or date.today().isoformat()
+    payload["report_type"] = "read_only_usage_report"
     return payload
 
 
 def write_report(
-    events: Iterable[Mapping[str, Any]],
+    events: Iterable[Mapping[str, Any] | UsageEvent],
     output_dir: str | Path = "reports",
-    report_date: str | None = None,
+    report_date: Optional[str] = None,
 ) -> Path:
-    payload = build_report(events, report_date=report_date)
-    output_path = Path(output_dir) / f"df-146-{payload['report_date']}.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return output_path
+    report = build_report(events, report_date=report_date)
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"df-146-{report['report_date']}.json"
+    target_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return target_path
+
+
+__all__ = ["UsageEvent", "aggregate_usage", "build_report", "write_report"]
 # [CRUX-MK]
