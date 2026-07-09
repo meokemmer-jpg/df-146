@@ -1,0 +1,5 @@
+{
+  "verdict": "HOLDS",
+  "reason": "Der Test nutzt echte heterogene Usage-Events mit mehreren Hotels/Kunden und unterschiedlichen Tokenkosten, wodurch Aggregation, Kostenberechnung, Read-only-Report und deaktiviertes Auto-Billing funktional geprüft werden.",
+  "ts": "2026-07-08T15:06:00.463669+00:00"
+}
